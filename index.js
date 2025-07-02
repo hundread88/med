@@ -12,21 +12,26 @@ const TOKEN = process.env.BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const PORT = process.env.PORT || 3000;
 
-const bot = new TelegramBot(TOKEN, { webHook: { port: PORT } });
+// Инициализируем бота без передачи порта (иначе конфликт с Express)
+const bot = new TelegramBot(TOKEN);
 bot.setWebHook(`${WEBHOOK_URL}/bot${TOKEN}`);
 
+// Загружаем базы симптомов и учреждений
 const symptomsMap = JSON.parse(fs.readFileSync('./symptoms.json', 'utf-8'));
 const facilitiesMap = JSON.parse(fs.readFileSync('./facilities.json', 'utf-8'));
 
+// Устанавливаем обработчик Webhook
 app.post(`/bot${TOKEN}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
 
+// Ответ на /start
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, 'Здравствуйте! Опишите, пожалуйста, ваши симптомы, и я подскажу, куда лучше обратиться.');
 });
 
+// Обработка сообщений
 bot.on('message', (msg) => {
   if (msg.text.startsWith('/start')) return;
 
@@ -55,6 +60,7 @@ bot.on('message', (msg) => {
   });
 });
 
+// Запуск Express-сервера
 app.listen(PORT, () => {
   console.log(`Express server is listening on port ${PORT}`);
 });
