@@ -2,6 +2,7 @@ import express from 'express';
 import TelegramBot from 'node-telegram-bot-api';
 import dotenv from 'dotenv';
 import fs from 'fs';
+import { normalizeText } from './normalize.js';
 
 dotenv.config();
 
@@ -31,7 +32,13 @@ bot.onText(/\/start/, (msg) => {
 bot.on('message', (msg) => {
   if (msg.text.startsWith('/start')) return;
 
-  const text = msg.text.toLowerCase();
+  const chatId = msg.chat.id;
+  const rawText = msg.text;
+  const text = normalizeText(rawText);
+
+  console.log(`[message] from @${msg.from.username || msg.from.id}: "${rawText}"`);
+  console.log(`→ Normalized: "${text}"`);
+
   const matchedSymptoms = [];
 
   for (const symptom in symptomsMap) {
@@ -41,7 +48,8 @@ bot.on('message', (msg) => {
   }
 
   if (matchedSymptoms.length === 0) {
-    bot.sendMessage(msg.chat.id, 'Не смог распознать симптомы. Пожалуйста, опишите подробнее или используйте распространённые выражения.');
+    console.log('⚠️  Symptoms not recognized.');
+    bot.sendMessage(chatId, 'Не смог распознать симптомы. Пожалуйста, опишите подробнее или используйте распространённые выражения.');
     return;
   }
 
@@ -56,13 +64,17 @@ bot.on('message', (msg) => {
     if (category) matchedCategories.add(category);
   });
 
+  console.log(`✔️  Matched symptoms: ${matchedSymptoms}`);
+  console.log(`📋 Diagnoses: ${[...probableDiagnoses]}`);
+  console.log(`🏥 Categories: ${[...matchedCategories]}`);
+
   let response = `🧾 Возможные диагнозы на основе ваших симптомов:\n`;
   response += [...probableDiagnoses].map(d => `• ${d}`).join('\n');
 
   response += `\n\n🏥 Рекомендуемые направления:\n`;
   response += [...matchedCategories].map(c => `🔹 *${c}* — ${facilitiesMap[c] || 'учреждение не найдено'}`).join('\n\n');
 
-  bot.sendMessage(msg.chat.id, response, { parse_mode: 'Markdown' });
+  bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
 
 app.listen(PORT, () => {
