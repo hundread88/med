@@ -1,3 +1,4 @@
+// index.js
 import express from 'express';
 import TelegramBot from 'node-telegram-bot-api';
 import dotenv from 'dotenv';
@@ -20,61 +21,98 @@ const symptomsMap = JSON.parse(fs.readFileSync('./symptoms.json', 'utf-8'));
 const facilitiesMap = JSON.parse(fs.readFileSync('./facilities.json', 'utf-8'));
 const diagnosisMap = JSON.parse(fs.readFileSync('./symptom_diagnosis.json', 'utf-8'));
 
+const allSymptoms = Object.keys(symptomsMap);
+const pageSize = 5;
+const userState = {}; // { chatId: { selected: [], page: 0 } }
+
+function buildSymptomKeyboard(chatId) {
+  const state = userState[chatId];
+  const page = state.page || 0;
+  const symptoms = allSymptoms.slice(page * pageSize, (page + 1) * pageSize);
+
+  const buttons = symptoms.map(symptom => {
+    const selected = state.selected.includes(symptom);
+    return [{
+      text: `${selected ? '✅' : '❌'} ${symptom}`,
+      callback_data: `toggle_${symptom}`
+    }];
+  });
+
+  const navButtons = [];
+  if (page > 0) navButtons.push({ text: '⬅️ Назад', callback_data: 'prev' });
+  if ((page + 1) * pageSize < allSymptoms.length) navButtons.push({ text: '➡️ Далее', callback_data: 'next' });
+  if (state.selected.length > 0) navButtons.push({ text: '✅ Готово', callback_data: 'done' });
+
+  if (navButtons.length) buttons.push(navButtons);
+
+  return {
+    reply_markup: {
+      inline_keyboard: buttons
+    }
+  };
+}
+
 app.post(`/bot${TOKEN}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
 
 bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(msg.chat.id, 'Здравствуйте! Опишите, пожалуйста, ваши симптомы, и я подскажу, куда лучше обратиться.');
+  const chatId = msg.chat.id;
+  userState[chatId] = { selected: [], page: 0 };
+  bot.sendMessage(chatId, 'Выберите симптомы из списка:', buildSymptomKeyboard(chatId));
 });
 
-bot.on('message', (msg) => {
-  if (msg.text.startsWith('/start')) return;
+bot.on('callback_query', (query) => {
+  const chatId = query.message.chat.id;
+  const state = userState[chatId] || { selected: [], page: 0 };
+  const data = query.data;
 
-  const chatId = msg.chat.id;
-  const rawText = msg.text;
-  const text = normalizeText(rawText);
-
-  console.log(`[message] from @${msg.from.username || msg.from.id}: "${rawText}"`);
-  console.log(`→ Normalized: "${text}"`);
-
-  const matchedSymptoms = [];
-
-  for (const symptom in symptomsMap) {
-    if (text.includes(symptom)) {
-      matchedSymptoms.push(symptom);
+  if (data.startsWith('toggle_')) {
+    const symptom = data.replace('toggle_', '');
+    if (state.selected.includes(symptom)) {
+      state.selected = state.selected.filter(s => s !== symptom);
+    } else if (state.selected.length < 5) {
+      state.selected.push(symptom);
     }
+    bot.editMessageReplyMarkup(buildSymptomKeyboard(chatId).reply_markup, {
+      chat_id: chatId,
+      message_id: query.message.message_id
+    });
+    bot.answerCallbackQuery(query.id);
+  } else if (data === 'next') {
+    state.page++;
+    bot.editMessageReplyMarkup(buildSymptomKeyboard(chatId).reply_markup, {
+      chat_id: chatId,
+      message_id: query.message.message_id
+    });
+    bot.answerCallbackQuery(query.id);
+  } else if (data === 'prev') {
+    state.page--;
+    bot.editMessageReplyMarkup(buildSymptomKeyboard(chatId).reply_markup, {
+      chat_id: chatId,
+      message_id: query.message.message_id
+    });
+    bot.answerCallbackQuery(query.id);
+  } else if (data === 'done') {
+    const selected = state.selected;
+    const diagnoses = new Set();
+    const categories = new Set();
+
+    selected.forEach(symptom => {
+      (diagnosisMap[symptom] || []).forEach(d => diagnoses.add(d));
+      if (symptomsMap[symptom]) categories.add(symptomsMap[symptom]);
+    });
+
+    let response = '🧾 Возможные диагнозы:\n';
+    response += [...diagnoses].map(d => `• ${d}`).join('\n');
+    response += '\n\n🏥 Направления:\n';
+    response += [...categories].map(c => `🔹 *${c}* — ${facilitiesMap[c] || 'учреждение не найдено'}`).join('\n\n');
+
+    bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
+    delete userState[chatId];
+    bot.answerCallbackQuery(query.id);
   }
-
-  if (matchedSymptoms.length === 0) {
-    console.log('⚠️  Symptoms not recognized.');
-    bot.sendMessage(chatId, 'Не смог распознать симптомы. Пожалуйста, опишите подробнее или используйте распространённые выражения.');
-    return;
-  }
-
-  const probableDiagnoses = new Set();
-  const matchedCategories = new Set();
-
-  matchedSymptoms.forEach(symptom => {
-    const diagnoses = diagnosisMap[symptom];
-    if (diagnoses) diagnoses.forEach(d => probableDiagnoses.add(d));
-
-    const category = symptomsMap[symptom];
-    if (category) matchedCategories.add(category);
-  });
-
-  console.log(`✔️  Matched symptoms: ${matchedSymptoms}`);
-  console.log(`📋 Diagnoses: ${[...probableDiagnoses]}`);
-  console.log(`🏥 Categories: ${[...matchedCategories]}`);
-
-  let response = `🧾 Возможные диагнозы на основе ваших симптомов:\n`;
-  response += [...probableDiagnoses].map(d => `• ${d}`).join('\n');
-
-  response += `\n\n🏥 Рекомендуемые направления:\n`;
-  response += [...matchedCategories].map(c => `🔹 *${c}* — ${facilitiesMap[c] || 'учреждение не найдено'}`).join('\n\n');
-
-  bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
 
 app.listen(PORT, () => {
